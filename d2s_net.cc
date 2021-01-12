@@ -108,36 +108,36 @@ void dw11(float *data, float *mat, float *out, int m, int c) {
     }
 }
 
+const int RECEPTIVE_FIELD = 11;
+template<int BatchSize, int Channels>
 class Block {
   public:
     float *residualb,
           *dw[5], *pwb[5];
     
 
-    PW<BATCH_SIZE/3, 80, 160> in_pw;
-    PW<BATCH_SIZE/3, 160, 160> pw[3];
-    PW<BATCH_SIZE/3, 80, 80, 2*80, 3*80> expand[3];
-    PW<BATCH_SIZE, 80, 80> residual;
+    PW<BatchSize/3, Channels, 2*Channels> in_pw;
+    PW<BatchSize/3, 2*Channels, 2*Channels> pw[3];
+    PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels> expand[3];
+    PW<BatchSize, Channels, Channels> residual;
 
-    int chans, rf;
-
-    Block(int channels, int receptive_field) : chans(channels), rf(receptive_field) {
-        residualb = (float*) aligned_alloc(ALIGN, channels*sizeof(float));
+    Block() {
+        residualb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float));
         for (int i = 0; i < 5; i++) {
-            dw[i] = (float*) aligned_alloc(ALIGN, 2*channels*receptive_field*sizeof(float)); 
-            pwb[i] = (float*) aligned_alloc(ALIGN, 2*channels*sizeof(float)); 
+            dw[i] = (float*) aligned_alloc(ALIGN, 2*Channels*RECEPTIVE_FIELD*sizeof(float)); 
+            pwb[i] = (float*) aligned_alloc(ALIGN, 2*Channels*sizeof(float)); 
         }
 
-        for (int i = 0; i < channels; i++) {
+        for (int i = 0; i < Channels; i++) {
             residualb[i] = (float) (rand() % 4) - 2;
         }
-        for (int i = 0; i < 2*channels; i++) {
+        for (int i = 0; i < 2*Channels; i++) {
             for (int k = 0; k < 5; k++) {
                 pwb[k][i] = (float) (rand() % 4) - 2;
             }
-            for (int j = 0; j < receptive_field; j++) {
+            for (int j = 0; j < RECEPTIVE_FIELD; j++) {
                 for (int k = 0; k < 5; k++) {
-                    dw[k][i*receptive_field+j] = (float) (rand() % 4) - 2;
+                    dw[k][i*RECEPTIVE_FIELD+j] = (float) (rand() % 4) - 2;
                 }
             }        
         }
@@ -146,72 +146,70 @@ class Block {
     // Assumes, that all buffers are padded on both sides with zeros
     // (since we are lazy to deal with special cases around borders)
     void calc(float *input, float *output, float* buf2) {
-        int seq_size = BATCH_SIZE;
-        for (int i = 0; i < seq_size; i++) {
-            memcpy(output + i*chans, residualb, chans*sizeof(float));
+        for (int i = 0; i < BatchSize; i++) {
+            memcpy(output + i*Channels, residualb, Channels*sizeof(float));
         }
         residual.run(input, output);
 
         //Pool
         // Zero is special case
-        for (int i = 0; i < chans; i++) {
-            input[i] += input[chans+i];
-            input[i] += input[chans*2+i];
+        for (int i = 0; i < Channels; i++) {
+            input[i] += input[Channels+i];
+            input[i] += input[Channels*2+i];
         }
 
-        for (int i = 1; i < seq_size / 3; i++) {
-            memset(input + i*chans, 0, chans*sizeof(float));
-            for (int j = 0; j < chans; j++) {
-                input[i*chans+j] += input[(i*3)*chans+j];
-                input[i*chans+j] += input[(i*3+1)*chans+j];
-                input[i*chans+j] += input[(i*3+2)*chans+j];
+        for (int i = 1; i < BatchSize / 3; i++) {
+            memset(input + i*Channels, 0, Channels*sizeof(float));
+            for (int j = 0; j < Channels; j++) {
+                input[i*Channels+j] += input[(i*3)*Channels+j];
+                input[i*Channels+j] += input[(i*3+1)*Channels+j];
+                input[i*Channels+j] += input[(i*3+2)*Channels+j];
             }
         }
-        memset(input + (seq_size/3)*chans, 0, chans*11*sizeof(float));
+        memset(input + (BatchSize/3)*Channels, 0, Channels*11*sizeof(float));
         in_pw.run(input, buf2);
         // TODO: bias
-        dw11(buf2, dw[0], input, seq_size/3, 2*chans);
-        for (int i = 0; i < seq_size/3 * 2 * chans; i++) {
+        dw11(buf2, dw[0], input, BatchSize/3, 2*Channels);
+        for (int i = 0; i < BatchSize/3 * 2 * Channels; i++) {
             input[i] = fasterswish(input[i]);
         }
 
         for (int k = 1; k < 4; k++) {
-            dw11(input, dw[k], buf2, seq_size / 3, chans*2);
-            for (int i = 0; i < seq_size/3; i++) {
-                memcpy(input + i*2*chans, pwb[k], 2*chans*sizeof(float));
+            dw11(input, dw[k], buf2, BatchSize / 3, Channels*2);
+            for (int i = 0; i < BatchSize/3; i++) {
+                memcpy(input + i*2*Channels, pwb[k], 2*Channels*sizeof(float));
             }
             pw[k-1].run(buf2, input);
-            for (int i = 0; i < seq_size/3 * 2 * chans; i++) {
+            for (int i = 0; i < BatchSize/3 * 2 * Channels; i++) {
                 input[i] = fasterswish(input[i]);
             }
         }
-        dw11(input, dw[4], buf2, seq_size / 3, chans * 2);
+        dw11(input, dw[4], buf2, BatchSize / 3, Channels * 2);
         expand[0].run(buf2, output);
         expand[1].run(buf2 + 40, output + 80);
         expand[2].run(buf2 + 80, output + 160);
 /*        pw[4].run(buf2, output);*/
-        for (int i = 0; i < seq_size * chans; i++) {
+        for (int i = 0; i < BatchSize * Channels; i++) {
             output[i] = fasterswish(output[i]);
         }
     }
 };
 
+template<int BatchSize, int Channels>
 class BlockC {
   public:
     float *dw, *pwb;
-    PW<BATCH_SIZE, 80, 80> pw;
+    PW<BatchSize, Channels, Channels> pw;
 
-    int chans, rf;
-
-    BlockC(int channels, int receptive_field) : chans(channels), rf(receptive_field) {
-        dw = (float*) aligned_alloc(ALIGN, channels*receptive_field*sizeof(float)); 
+    BlockC() {
+        dw = (float*) aligned_alloc(ALIGN, Channels*RECEPTIVE_FIELD*sizeof(float)); 
         
-        pwb = (float*) aligned_alloc(ALIGN, channels*sizeof(float)); 
+        pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
 
-        for (int i = 0; i < channels; i++) {
+        for (int i = 0; i < Channels; i++) {
             pwb[i] = (float) (rand() % 4) - 2;
-            for (int j = 0; j < receptive_field; j++) {
-                dw[i*receptive_field+j] = (float) (rand() % 4) - 2;
+            for (int j = 0; j < RECEPTIVE_FIELD; j++) {
+                dw[i*RECEPTIVE_FIELD+j] = (float) (rand() % 4) - 2;
             }        
         }
     }
@@ -219,29 +217,28 @@ class BlockC {
     // Assumes, that all buffers are padded on both sides with zeros
     // (since we are lazy to deal with special cases around borders)
     void calc(float *input, float *output, float* buf2) {
-        int seq_size = BATCH_SIZE;
-        dw11(input, dw, buf2, seq_size, chans);
-        for (int i = 0; i < seq_size; i++) {
-            memcpy(output + i*chans, pwb, chans*sizeof(float));
+        dw11(input, dw, buf2, BatchSize, Channels);
+        for (int i = 0; i < BatchSize; i++) {
+            memcpy(output + i*Channels, pwb, Channels*sizeof(float));
         }
         pw.run(buf2, output);
-        for (int i = 0; i < seq_size * chans; i++) {
+        for (int i = 0; i < BatchSize * Channels; i++) {
             output[i] = fasterswish(output[i]);
         }
     }
 };
 
+template<int BatchSize, int Channels>
 class BlockC2 {
   public:
-    PW<BATCH_SIZE,80,40> pw[7];
+    PW<BatchSize,Channels, Channels/2> pw[7];
     float *pwb;
 
-    int chans;
 
-    BlockC2(int channels) : chans(channels) {
-        pwb = (float*) aligned_alloc(ALIGN, channels*sizeof(float)); 
+    BlockC2() {
+        pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
 
-        for (int i = 0; i < channels; i++) {
+        for (int i = 0; i < Channels; i++) {
             pwb[i] = (float) (rand() % 4) - 2;
         }
     }
@@ -249,14 +246,13 @@ class BlockC2 {
     // Assumes, that all buffers are padded on both sides with zeros
     // (since we are lazy to deal with special cases around borders)
     void calc(float *input, float *output, float* buf2) {
-        int seq_size = BATCH_SIZE;
-        for (int i = 0; i < seq_size; i++) {
-            memcpy(output + i*chans/2, pwb, chans/2*sizeof(float));
+        for (int i = 0; i < BatchSize; i++) {
+            memcpy(output + i*Channels/2, pwb, Channels/2*sizeof(float));
         }
         for (int k = 0; k < 7; k++) {
-            pw[k].run(input + (k-3)*chans, output);
+            pw[k].run(input + (k-3)*Channels, output);
         }
-        for (int i = 0; i < seq_size * chans; i++) {
+        for (int i = 0; i < BatchSize * Channels; i++) {
             output[i] = fasterswish(output[i]);
         }
     }
@@ -292,13 +288,13 @@ int main() {
         ib[i] = (float) (rand() % 4) - 2;
     }
 
-    Block block1(80, 11);
-    Block block2(80, 11);
-    Block block3(80, 11);
-    Block block4(80, 11);
-    Block block5(80, 11);
-    BlockC blockc(80, 11);
-    BlockC2 blockc2(80);
+    Block<BATCH_SIZE, 80> block1;
+    Block<BATCH_SIZE, 80> block2;
+    Block<BATCH_SIZE, 80> block3;
+    Block<BATCH_SIZE, 80> block4;
+    Block<BATCH_SIZE, 80> block5;
+    BlockC<BATCH_SIZE, 80> blockc;
+    BlockC2<BATCH_SIZE, 80> blockc2;
 
     float *inpx = (float*) aligned_alloc(ALIGN, (3*BATCH_SIZE)*1*sizeof(float));
     float *inp_im2col = (float*) aligned_alloc(ALIGN, (BATCH_SIZE)*9*sizeof(float));
