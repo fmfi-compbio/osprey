@@ -92,7 +92,7 @@ static inline float turboexp(float p) {
 static inline float
 fasterswish (float x)
 {
-//  return x / (1.0f + turboexp (-x));
+    return x / (1.0f + turboexp (-x));
     return x / (1.0f + expf(-x));
 }
 
@@ -195,31 +195,31 @@ class Block {
         //Pool
         // Zero is special case
         for (int i = 0; i < Channels; i++) {
-//          input[i] /= 3;
-            input[i] += input[Channels+i];
-            input[i] += input[Channels*2+i];
+            input[i] /= 3;
+            input[i] += input[Channels+i]/3;
+            input[i] += input[Channels*2+i]/3;
         }
 
         for (int i = 1; i < BatchSize / 3; i++) {
             memset(input + i*Channels, 0, Channels*sizeof(float));
             for (int j = 0; j < Channels; j++) {
-                input[i*Channels+j] += input[(i*3)*Channels+j];
-                input[i*Channels+j] += input[(i*3+1)*Channels+j];
-                input[i*Channels+j] += input[(i*3+2)*Channels+j];
+                input[i*Channels+j] += input[(i*3)*Channels+j]/3;
+                input[i*Channels+j] += input[(i*3+1)*Channels+j]/3;
+                input[i*Channels+j] += input[(i*3+2)*Channels+j]/3;
             }
         }
 
-//        memset(input + (BatchSize/3)*Channels, 0, (BatchSize/3+11)*Channels*sizeof(float));
-//        memset(buf2, 0, (BatchSize/3)*2*Channels*sizeof(float));
+        memset(input + (BatchSize/3)*Channels, 0, (BatchSize/3+11)*Channels*sizeof(float));
+        memset(buf2, 0, (BatchSize/3)*2*Channels*sizeof(float));
         in_pw.run(input, buf2);
 
 
         dw11(buf2, dw[0], input, BatchSize/3, 2*Channels);
-/*        for (int i = 0; i < BatchSize/3; i++) {
+        for (int i = 0; i < BatchSize/3; i++) {
             for (int j = 0; j < 2*Channels; j++) {
                 input[i*2*Channels+j] += pwb[0][j];
             }
-        }*/
+        }
 
         for (int i = 0; i < BatchSize/3 * 2 * Channels; i++) {
             input[i] = fasterswish(input[i]);
@@ -253,15 +253,16 @@ class BlockC {
     float *dw, *pwb;
     PW<BatchSize, Channels, Channels> pw;
 
-    BlockC() {
+    BlockC(map<string, vector<float>>& data, string prefix) : pw(data[prefix+".conv.0.pointwise.weight"]) {
         dw = (float*) aligned_alloc(ALIGN, Channels*RECEPTIVE_FIELD*sizeof(float)); 
         
         pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
 
         for (int i = 0; i < Channels; i++) {
-            pwb[i] = (float) (rand() % 4) - 2;
+            pwb[i] = data[prefix+".conv.0.pointwise.bias"][i];
             for (int j = 0; j < RECEPTIVE_FIELD; j++) {
-                dw[i*RECEPTIVE_FIELD+j] = (float) (rand() % 4) - 2;
+//                dw[i*RECEPTIVE_FIELD+j] = (float) (rand() % 4) - 2;
+                dw[i*RECEPTIVE_FIELD+j] = data[prefix+".conv.0.depthwise.weight"][i*RECEPTIVE_FIELD+j];
             }        
         }
     }
@@ -287,11 +288,17 @@ class BlockC2 {
     float *pwb;
 
 
-    BlockC2() {
+    BlockC2(map<string, vector<float>>& data, string prefix) {
         pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
 
         for (int i = 0; i < Channels; i++) {
-            pwb[i] = (float) (rand() % 4) - 2;
+            pwb[i] = data[prefix+".conv.0.conv.bias"][i];
+        }
+        for (int i = 0; i < 7; i++) {
+            for (int j = 0; j < Channels*Channels/2; j++) {
+                pw[i].weight[j] = data[prefix+".conv.0.conv.weight"][j+i*Channels*Channels/2];
+
+            }
         }
     }
 
@@ -337,7 +344,7 @@ int main() {
     PW<BATCH_SIZE, 9, 80> pw_in(weights["e.encoder.0.conv.0.conv.weight"]);
     float* ib = (float*) aligned_alloc(ALIGN, channels*sizeof(float));
     float* ob = (float*) aligned_alloc(ALIGN, 5*sizeof(float));
-    PW<BATCH_SIZE, 40, 5> pw_out;
+    PW<BATCH_SIZE, 40, 5> pw_out(weights["out.weight"]);
     for (int i = 0; i < channels; i++) {
         ib[i] = weights["e.encoder.0.conv.0.conv.bias"][i];
     }
@@ -350,8 +357,8 @@ int main() {
     Block<BATCH_SIZE, 80> block3(weights, "e.encoder.3");
     Block<BATCH_SIZE, 80> block4(weights, "e.encoder.4");
     Block<BATCH_SIZE, 80> block5(weights, "e.encoder.5");
-    BlockC<BATCH_SIZE, 80> blockc;
-    BlockC2<BATCH_SIZE, 80> blockc2;
+    BlockC<BATCH_SIZE, 80> blockc(weights, "e.encoder.6");
+    BlockC2<BATCH_SIZE, 80> blockc2(weights, "e.encoder.7");
 
     float *inpx = (float*) aligned_alloc(ALIGN, (3*BATCH_SIZE)*1*sizeof(float));
     float *inp_im2col = (float*) aligned_alloc(ALIGN, (BATCH_SIZE)*9*sizeof(float));
@@ -362,8 +369,8 @@ int main() {
     float *bufd2s = (float*) aligned_alloc(ALIGN, (BATCH_SIZE/3+2*pad)*160*sizeof(float));
     printf("%llx %llx %llx\n", inp, out, buf2);
     
-    int reps = 100;
-    for (int j = 0; j < 10; j++) {
+    int reps = 1;
+    for (int j = 0; j < 1; j++) {
         memset(inpx, 0, (3*BATCH_SIZE)*1*sizeof(float));
         for (int i = 0; i < 3*BATCH_SIZE; i++) {
             inpx[i] = 1;
@@ -397,7 +404,7 @@ int main() {
             block4.calc(out + pad*80, inp + pad*80, bufd2s + pad*160);
             block5.calc(inp + pad*80, out + pad*80, bufd2s + pad*160);
 
-/*            blockc.calc(out + pad*80, inp + pad*80, buf2 + pad*80);
+            blockc.calc(out + pad*80, inp + pad*80, buf2 + pad*80);
             blockc2.calc(inp + pad*80, out + pad*80, buf2 + pad*80);
             for (int i = 0; i < BATCH_SIZE; i++) {
                 for (int j = 0; j < 5; j++) {
@@ -405,8 +412,9 @@ int main() {
                 }
             }
             
-            pw_out.run(out + pad*channels, inp + pad*channels);*/
-            // TODO: bias
+            pw_out.run(out + pad*channels, inp + pad*channels);
+//            for (int i = 0; i < BATCH_SIZE*5; i+=5)
+//                printf("%d: %f\n", i, inp[pad*80+i]);
         }
         auto end = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds = end-start;
