@@ -264,12 +264,42 @@ class BlockX(Module):
 
     def forward(self, x):
         _x = x
-        for layer in self.conv:
+        for i, layer in enumerate(self.conv):
+#            if i == 0:
+#                print(i, _x[0,0,:])
             _x = layer(_x)
+
         if self.use_res:
             _x += self.residual(x)
         return self.activation(_x)
 
+    def get_fuses(self, prefix):
+        out = []
+        for i, m in enumerate(self.conv):
+            if type(m) == nn.BatchNorm1d:
+                if type(self.conv[i-1]) == nn.Conv1d:
+                    out.append(
+                        ["%s.conv.%d" % (prefix, i-1), "%s.conv.%d" % (prefix, i)])
+                elif type(self.conv[i-1]) == Expand:
+                    self.ebn1 = m
+                    self.ebn2 = m
+                    out.append(
+                        ["%s.conv.%d.convs.0" % (prefix, i-1), "%s.conv.%d" % (prefix, i)])
+                    out.append(
+                        ["%s.conv.%d.convs.1" % (prefix, i-1), "%s.ebn1" % (prefix)])
+                    out.append(
+                        ["%s.conv.%d.convs.2" % (prefix, i-1), "%s.ebn2" % (prefix)])
+
+                elif self.conv[i-1].separable:
+                    out.append(
+                        ["%s.conv.%d.pointwise" % (prefix, i-1), "%s.conv.%d" % (prefix, i)])
+                else:
+                    out.append(
+                        ["%s.conv.%d.conv" % (prefix, i-1), "%s.conv.%d" % (prefix, i)])
+
+        if self.residual:
+            out.append(["%s.residual.0.conv" % prefix, "%s.residual.1" % prefix])
+        return out
 class Block(Module):
     """
     TCSConv, Batch Normalisation, Activation, Dropout
@@ -339,3 +369,16 @@ class Block(Module):
         if self.use_res:
             _x += self.residual(x)
         return self.activation(_x)
+
+    def get_fuses(self, prefix):
+        out = []
+        for i, m in enumerate(self.conv):
+            if type(m) == nn.BatchNorm1d:
+                if self.conv[i-1].separable:
+                    out.append(
+                        ["%s.conv.%d.pointwise" % (prefix, i-1), "%s.conv.%d" % (prefix, i)])
+                else:
+                    out.append(
+                        ["%s.conv.%d.conv" % (prefix, i-1), "%s.conv.%d" % (prefix, i)])
+
+        return out
