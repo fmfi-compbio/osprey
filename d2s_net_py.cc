@@ -102,7 +102,7 @@ fasterswish (float x)
 //    if (x > 20) return x;
 //    return x / (1.0f + fasterexp(-x));
     return x / (1.0f + turboexp (-x));
-    return x / (1.0f + expf(-x));
+//    return x / (1.0f + expf(-x));
 }
 
 // mat: [pos, channels]
@@ -298,9 +298,9 @@ class BlockC2 {
 
 
     BlockC2(map<string, vector<float>>& data, string prefix) {
-        pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
+        pwb = (float*) aligned_alloc(ALIGN, Channels/2*sizeof(float)); 
 
-        for (int i = 0; i < Channels; i++) {
+        for (int i = 0; i < Channels/2; i++) {
             pwb[i] = data[prefix+".conv.0.conv.bias"][i];
         }
         for (int i = 0; i < 7; i++) {

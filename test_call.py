@@ -1,4 +1,4 @@
-import osprey
+import osprey24 as osprey
 import numpy as np
 import time
 from ont_fast5_api.fast5_interface import get_fast5_file
@@ -51,12 +51,18 @@ files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
 
 fout = open("out.fasta", "w")
 
+ts = 0
+start = time.time()
 for i ,f in enumerate(files):
-    print(i, f)
     res = call_file(f)
-    for r_id, basecall, _ in res:
+    for r_id, basecall, ls in res:
         print(">%s" % r_id, file=fout)
         print(basecall, file=fout)
+        print(i, f, ls, len(basecall))
         fout.flush()
+        ts += ls
+
+end = time.time()
+print("speed", ts / (end - start))
 
 fout.close()
