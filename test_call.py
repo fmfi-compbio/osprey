@@ -35,9 +35,7 @@ def call_file(filename):
                 signal = rescale_signal(signal)
 
                 basecall = caller.call(signal).reshape((-1,5))
-                print(np.min(basecall, axis=0), np.max(basecall, axis=0))
                 basecall = softmax(basecall, axis=1)
-                print(np.max(basecall, axis=0))
                 basecall = deepnano2.beam_search_py(np.ascontiguousarray(basecall), 5, 0.1)
                 out.append((read_id, basecall, len(signal)))
 #    except OSError:
@@ -49,11 +47,11 @@ caller = osprey.Caller()
 base_dir = sys.argv[1]
 files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
 
-fout = open("out.fasta", "w")
+fout = open("outtmp.fasta", "w")
 
 ts = 0
 start = time.time()
-for i ,f in enumerate(files):
+for i, f in enumerate(files):
     res = call_file(f)
     for r_id, basecall, ls in res:
         print(">%s" % r_id, file=fout)

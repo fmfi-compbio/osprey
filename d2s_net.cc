@@ -99,6 +99,8 @@ fasterswish (float x)
 // mat: [pos, channels]
 void dw11(float *data, float *mat, float *out, int m, int c) {
 //    memset(out, 0, m*c*sizeof(float));
+//    memcpy(out, data, m*c*sizeof(float));
+//    return;
     int BS = 128;
     for (int ib = 0; ib < m; ib += BS) {
         for (int k = 0; k < c; k+=8) {
@@ -369,8 +371,8 @@ int main() {
     float *bufd2s = (float*) aligned_alloc(ALIGN, (BATCH_SIZE/3+2*pad)*160*sizeof(float));
     printf("%llx %llx %llx\n", inp, out, buf2);
     
-    int reps = 1;
-    for (int j = 0; j < 1; j++) {
+    int reps = 5;
+    for (int j = 0; j < 10; j++) {
         memset(inpx, 0, (3*BATCH_SIZE)*1*sizeof(float));
         for (int i = 0; i < 3*BATCH_SIZE; i++) {
             inpx[i] = 1;

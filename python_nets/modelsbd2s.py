@@ -300,6 +300,7 @@ class BlockX(Module):
         if self.residual:
             out.append(["%s.residual.0.conv" % prefix, "%s.residual.1" % prefix])
         return out
+
 class Block(Module):
     """
     TCSConv, Batch Normalisation, Activation, Dropout
