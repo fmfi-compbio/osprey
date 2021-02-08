@@ -107,6 +107,7 @@ class DW11 {
         }
     }
 
+    // mat: [pos, channels]
     void run(float* data, float*out, int m) {
         int BS = 128;
         for (int ib = 0; ib < m; ib += BS) {
@@ -138,36 +139,6 @@ class DW11 {
     }
 };
 
-// mat: [pos, channels]
-void dw11(float *data, float *mat, float *out, int m, int c) {
-    int BS = 128;
-    for (int ib = 0; ib < m; ib += BS) {
-        for (int k = 0; k < c; k+=8) {
-            __m256 rs[] = {
-                _mm256_load_ps(mat + 0*c+k),
-                _mm256_load_ps(mat + 1*c+k),
-                _mm256_load_ps(mat + 2*c+k),
-                _mm256_load_ps(mat + 3*c+k),
-                _mm256_load_ps(mat + 4*c+k),
-                _mm256_load_ps(mat + 5*c+k),
-                _mm256_load_ps(mat + 6*c+k),
-                _mm256_load_ps(mat + 7*c+k),
-                _mm256_load_ps(mat + 8*c+k),
-                _mm256_load_ps(mat + 9*c+k),
-                _mm256_load_ps(mat + 10*c+k)};
-            for (int i = ib; i < min(ib+BS, m); i++) {
-                __m256 v = _mm256_set1_ps(0);
-                for (int j = 0; j < 11; j++) {
-                    int i2 = i - 5 + j;
-                    v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*c+k)),
-                                        rs[j],
-                                        v);
-                }
-                _mm256_store_ps(out + (i*c+k), v);
-            }
-        }
-    }
-}
 
 const int RECEPTIVE_FIELD = 11;
 template<int BatchSize, int Channels>
@@ -509,31 +480,22 @@ class BlockC {
 
     BlockC(map<string, vector<float>>& data, string prefix) :
         pw(data[prefix+".conv.0.pointwise.weight"]), dw(Channels, data, prefix+".conv.0.depthwise.weight") {
-//      dw = (float*) aligned_alloc(ALIGN, Channels*RECEPTIVE_FIELD*sizeof(float)); 
         
         pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
 
         for (int i = 0; i < Channels; i++) {
             pwb[i] = data[prefix+".conv.0.pointwise.bias"][i];
-            for (int j = 0; j < RECEPTIVE_FIELD; j++) {
-//                dw[i*RECEPTIVE_FIELD+j] = (float) (rand() % 4) - 2;
-//              dw[i*RECEPTIVE_FIELD+j] = data[prefix+".conv.0.depthwise.weight"][i*RECEPTIVE_FIELD+j];
-            }        
         }
     }
 
     // Assumes, that all buffers are padded on both sides with zeros
     // (since we are lazy to deal with special cases around borders)
     void calc(float *input, float *output, float* buf2) {
-//      dw11(input, dw, buf2, BatchSize, Channels);
         dw.run(input, buf2, BatchSize);
         for (int i = 0; i < BatchSize; i++) {
             memcpy(output + i*Channels, pwb, Channels*sizeof(float));
         }
         pw.run(buf2, output);
-/*        for (int i = 0; i < BatchSize * Channels; i++) {
-            output[i] = fasterswish(output[i]);
-        }*/
         fasterswisharr(output, BatchSize * Channels);
     }
 };
@@ -568,9 +530,6 @@ class BlockC2 {
         for (int k = 0; k < 7; k++) {
             pw[k].run(input + (k-3)*Channels, output);
         }
-/*        for (int i = 0; i < BatchSize * Channels; i++) {
-            output[i] = fasterswish(output[i]);
-        }*/
         fasterswisharr(output, BatchSize * Channels);
     }
 };
@@ -598,9 +557,6 @@ class BlockS {
             memcpy(output + i*Channels*2, pwb, Channels*2*sizeof(float));
         }
         pw.run(input, output);
-/*        for (int i = 0; i < BatchSize * Channels; i++) {
-            output[i] = fasterswish(output[i]);
-        }*/
         fasterswisharr(output, BatchSize * Channels);
     }
 };
