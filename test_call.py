@@ -1,4 +1,4 @@
-import osprey24 as osprey
+import osprey24dwx as osprey
 import numpy as np
 import time
 from ont_fast5_api.fast5_interface import get_fast5_file
@@ -42,7 +42,7 @@ def call_file(filename):
 #        return []
     return out
 
-caller = osprey.Caller()
+caller = osprey.CallerDWX()
 
 base_dir = sys.argv[1]
 files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
