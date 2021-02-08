@@ -47,7 +47,7 @@ caller = osprey.Caller()
 base_dir = sys.argv[1]
 files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
 
-fout = open("outtmp.fasta", "w")
+fout = open("outtmp2.fasta", "w")
 
 ts = 0
 start = time.time()
