@@ -34,9 +34,14 @@ def call_file(filename):
                 signal = read.get_raw_data()
                 signal = rescale_signal(signal)
 
+#                signal = signal[:2*512*3*4]
+#                print(signal)
                 basecall = caller.call(signal).reshape((-1,5))
                 basecall = softmax(basecall, axis=1)
+#                print(basecall)
+#                print(basecall.shape)
                 basecall = deepnano2.beam_search_py(np.ascontiguousarray(basecall), 5, 0.1)
+#               print(len(basecall))
                 out.append((read_id, basecall, len(signal)))
 #    except OSError:
 #        return []
@@ -47,7 +52,9 @@ caller = osprey.CallerDWX()
 base_dir = sys.argv[1]
 files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
 
-fout = open("outtmp2.fasta", "w")
+#files = ["../eval/test_data_476/5210_N125509_20170425_FN2002039725_MN19691_sequencing_run_klebs_033_restart_87298_ch146_read12031_strand.fast5"]
+
+fout = open("outtmp3d.fasta", "w")
 
 ts = 0
 start = time.time()

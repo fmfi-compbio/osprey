@@ -16,7 +16,7 @@ using namespace std;
 const int ALIGN = 32;
 const int BATCH_SIZE = 512*3;
 const int CHANNELS = 96;
-const int PAD = 16;
+const int PAD = 32;
 const int STEPPING_PAD = 28;
 
 // mat: [in, out]
@@ -75,10 +75,10 @@ sgemm_jit_kernel_t PW<BatchSize, InputSize, OutputSize, Lda, Ldc>::sgemm_kernel 
 #define cast_uint32_t static_cast<uint32_t>
 
 static inline void fasterswisharr(float *f, int l) {
-    for (int i = 0; i < l; i++) {
+/*    for (int i = 0; i < l; i++) {
         f[i] = f[i] / (1 + expf(-f[i]));
     }
-    return;
+    return;*/
     __m256 c1 = _mm256_set1_ps(-12102203.15410432f);
     __m256 c2 = _mm256_set1_ps(1064872507.15410442f);
     __m256 one = _mm256_set1_ps(1.0f);
@@ -96,7 +96,275 @@ static inline void fasterswisharr(float *f, int l) {
     }
 }
 
-class DW11 {
+class DWX {
+  public:
+    int channels_;
+    float *w3, *w7, *w15, *w31;
+    DWX(int channels, map<string, vector<float>>&data, string prefix) : channels_(channels) {
+        w3 = (float*) aligned_alloc(ALIGN, 2*channels/6*3*sizeof(float));
+        w7 = (float*) aligned_alloc(ALIGN, 2*channels/6*7*sizeof(float));
+        w15 = (float*) aligned_alloc(ALIGN, channels/6*15*sizeof(float));
+        w31 = (float*) aligned_alloc(ALIGN, channels/6*31*sizeof(float));
+
+        for (int i = 0; i < 2*channels/6*3; i++) {
+            w3[i] = data[prefix+".c3.weight"][i];
+        }
+        for (int i = 0; i < 2*channels/6*7; i++) {
+            w7[i] = data[prefix+".c7.weight"][i];
+        }
+        for (int i = 0; i < channels/6*15; i++) {
+            w15[i] = data[prefix+".c15.weight"][i];
+        }
+        for (int i = 0; i < channels/6*31; i++) {
+            w31[i] = data[prefix+".c31.weight"][i];
+        }
+    }
+
+    void runb(float *data, float*out, int m) {
+        for (int output_pos = 0; output_pos < m; output_pos++) {
+            int s = 0;
+            for (int c = 0; c < channels_*2/6; c++) {
+                out[output_pos*channels_ + c + s] = 0;
+                for (int j = 0; j < 3; j++) {
+                    int i2 = output_pos - 1 + j;
+                    out[output_pos*channels_ + c + s] += 
+                        w3[j*channels_*2/6 + c] * data[i2*channels_ + c + s];
+                }
+            }
+            s += channels_*2/6;
+            for (int c = 0; c < channels_*2/6; c++) {
+                out[output_pos*channels_ + c + s] = 0;
+                for (int j = 0; j < 7; j++) {
+                    int i2 = output_pos - 3 + j;
+                    out[output_pos*channels_ + c + s] += 
+                        w7[j*channels_*2/6 + c] * data[i2*channels_ + c + s];
+                }
+            }        
+            s += channels_*2/6;
+            for (int c = 0; c < channels_/6; c++) {
+                out[output_pos*channels_ + c + s] = 0;
+                for (int j = 0; j < 15; j++) {
+                    int i2 = output_pos - 7 + j;
+                    out[output_pos*channels_ + c + s] += 
+                        w15[j*channels_/6 + c] * data[i2*channels_ + c + s];
+                }
+            }        
+            s += channels_/6;
+            for (int c = 0; c < channels_/6; c++) {
+                out[output_pos*channels_ + c + s] = 0;
+                for (int j = 0; j < 31; j++) {
+                    int i2 = output_pos - 15 + j;
+                    out[output_pos*channels_ + c + s] += 
+                        w31[j*channels_/6 + c] * data[i2*channels_ + c + s];
+                }
+            }                
+        }
+    }
+
+    void run(float *data, float *out, int m) {
+        int BS = 64;
+        for (int ib = 0; ib < m; ib += BS) {
+            int s = 0;
+            for (int k = 0; k < channels_*2/6; k+=8) {
+                __m256 rs[] = {
+                    _mm256_load_ps(w3 + 0*channels_*2/6+k),
+                    _mm256_load_ps(w3 + 1*channels_*2/6+k),
+                    _mm256_load_ps(w3 + 2*channels_*2/6+k)
+                };
+                if (false) {
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_set1_ps(0);
+                        for (int j = 0; j < 3; j++) {
+                            int i2 = i - 1 + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k)),
+                                                rs[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_+k), v);
+                    }
+                } else  {
+                    int saddr = ib - 1;
+                    __m256 a = _mm256_load_ps(data + saddr*channels_+k+s);
+                    __m256 b = _mm256_load_ps(data + (saddr+1)*channels_+k+s);
+                    __m256 c = _mm256_load_ps(data + (saddr+2)*channels_+k+s);
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_set1_ps(0);
+                        v = _mm256_fmadd_ps(a, rs[0], v);
+                        v = _mm256_fmadd_ps(b, rs[1], v);
+                        v = _mm256_fmadd_ps(c, rs[2], v);
+
+                        _mm256_store_ps(out + (i*channels_+k+s), v);
+                        a = b;
+                        b = c;
+                        c = _mm256_load_ps(data + (i+2) * channels_ + k + s);
+                    }
+                }
+            }
+            s += channels_*2/6;
+            for (int k = 0; k < channels_*2/6; k+=8) {
+                __m256 rs[] = {
+                    _mm256_load_ps(w7 + 0*channels_*2/6+k),
+                    _mm256_load_ps(w7 + 1*channels_*2/6+k),
+                    _mm256_load_ps(w7 + 2*channels_*2/6+k),
+                    _mm256_load_ps(w7 + 3*channels_*2/6+k),
+                    _mm256_load_ps(w7 + 4*channels_*2/6+k),
+                    _mm256_load_ps(w7 + 5*channels_*2/6+k),
+                    _mm256_load_ps(w7 + 6*channels_*2/6+k)
+                };
+                if (true) {
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_set1_ps(0);
+                        for (int j = 0; j < 7; j++) {
+                            int i2 = i - 3 + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_+k + s), v);
+                    }
+                }
+            }
+            s += channels_*2/6;
+            for (int k = 0; k < channels_/6; k+=8) {
+                {
+                    __m256 rs[] = {
+                        _mm256_load_ps(w15 + 0*channels_/6+k),
+                        _mm256_load_ps(w15 + 1*channels_/6+k),
+                        _mm256_load_ps(w15 + 2*channels_/6+k),
+                        _mm256_load_ps(w15 + 3*channels_/6+k),
+                        _mm256_load_ps(w15 + 4*channels_/6+k),
+                        _mm256_load_ps(w15 + 5*channels_/6+k),
+                        _mm256_load_ps(w15 + 6*channels_/6+k)
+                    };
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_set1_ps(0);
+                        for (int j = 0; j < 7; j++) {
+                            int i2 = i - 7 + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_ + k + s), v);
+                    }
+                }
+                {
+                    __m256 rs2[] = {
+                        _mm256_load_ps(w15 + 7*channels_/6+k),
+                        _mm256_load_ps(w15 + 8*channels_/6+k),
+                        _mm256_load_ps(w15 + 9*channels_/6+k),
+                        _mm256_load_ps(w15 + 10*channels_/6+k),
+                        _mm256_load_ps(w15 + 11*channels_/6+k),
+                        _mm256_load_ps(w15 + 12*channels_/6+k),
+                        _mm256_load_ps(w15 + 13*channels_/6+k),
+                        _mm256_load_ps(w15 + 14*channels_/6+k)
+                    };
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_load_ps(out + (i*channels_+k+s));
+                        for (int j = 0; j < 8; j++) {
+                            int i2 = i + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs2[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_+k + s), v);
+                    }
+                }
+            }
+            s += channels_/6;
+            for (int k = 0; k < channels_/6; k+=8) {
+                {
+                    __m256 rs[] = {
+                        _mm256_load_ps(w31 + 0*channels_/6+k),
+                        _mm256_load_ps(w31 + 1*channels_/6+k),
+                        _mm256_load_ps(w31 + 2*channels_/6+k),
+                        _mm256_load_ps(w31 + 3*channels_/6+k),
+                        _mm256_load_ps(w31 + 4*channels_/6+k),
+                        _mm256_load_ps(w31 + 5*channels_/6+k),
+                        _mm256_load_ps(w31 + 6*channels_/6+k)
+                    };
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_set1_ps(0);
+                        for (int j = 0; j < 7; j++) {
+                            int i2 = i - 15 + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_ + k + s), v);
+                    }
+                }
+                {
+                    __m256 rs2[] = {
+                        _mm256_load_ps(w31 + 7*channels_/6+k),
+                        _mm256_load_ps(w31 + 8*channels_/6+k),
+                        _mm256_load_ps(w31 + 9*channels_/6+k),
+                        _mm256_load_ps(w31 + 10*channels_/6+k),
+                        _mm256_load_ps(w31 + 11*channels_/6+k),
+                        _mm256_load_ps(w31 + 12*channels_/6+k),
+                        _mm256_load_ps(w31 + 13*channels_/6+k),
+                        _mm256_load_ps(w31 + 14*channels_/6+k)
+                    };
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_load_ps(out + (i*channels_+k+s));
+                        for (int j = 0; j < 8; j++) {
+                            int i2 = i - 8 + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs2[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_+k + s), v);
+                    }
+                }
+                {
+                    __m256 rs2[] = {
+                        _mm256_load_ps(w31 + 15*channels_/6+k),
+                        _mm256_load_ps(w31 + 16*channels_/6+k),
+                        _mm256_load_ps(w31 + 17*channels_/6+k),
+                        _mm256_load_ps(w31 + 18*channels_/6+k),
+                        _mm256_load_ps(w31 + 19*channels_/6+k),
+                        _mm256_load_ps(w31 + 20*channels_/6+k),
+                        _mm256_load_ps(w31 + 21*channels_/6+k),
+                        _mm256_load_ps(w31 + 22*channels_/6+k)
+                    };
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_load_ps(out + (i*channels_+k+s));
+                        for (int j = 0; j < 8; j++) {
+                            int i2 = i + j;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs2[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_+k + s), v);
+                    }
+                }            
+                {
+                    __m256 rs2[] = {
+                        _mm256_load_ps(w31 + 23*channels_/6+k),
+                        _mm256_load_ps(w31 + 24*channels_/6+k),
+                        _mm256_load_ps(w31 + 25*channels_/6+k),
+                        _mm256_load_ps(w31 + 26*channels_/6+k),
+                        _mm256_load_ps(w31 + 27*channels_/6+k),
+                        _mm256_load_ps(w31 + 28*channels_/6+k),
+                        _mm256_load_ps(w31 + 29*channels_/6+k),
+                        _mm256_load_ps(w31 + 30*channels_/6+k)
+                    };
+                    for (int i = ib; i < min(ib+BS, m); i++) {
+                        __m256 v = _mm256_load_ps(out + (i*channels_+k+s));
+                        for (int j = 0; j < 8; j++) {
+                            int i2 = i + j + 8;
+                            v = _mm256_fmadd_ps(_mm256_load_ps(data + (i2*channels_+k + s)),
+                                                rs2[j],
+                                                v);
+                        }
+                        _mm256_store_ps(out + (i*channels_+k + s), v);
+                    }
+                }                       
+            }
+        }
+    }
+};
+
+/*class DW11 {
   public:
     int channels_;
     float *weight;
@@ -137,10 +405,29 @@ class DW11 {
             }
         }
     }
-};
+};*/
 
 
-const int RECEPTIVE_FIELD = 11;
+void load_dwx_bias(map<string, vector<float>>& data, string prefix, float *out, int channels) {
+    int s = 0; 
+    for (int i = 0; i < 2*channels/6; i++) {
+        out[i+s] = data[prefix+".c3.bias"][i];
+    }
+    s += 2*channels/6;
+    for (int i = 0; i < 2*channels/6; i++) {
+        out[i+s] = data[prefix+".c7.bias"][i];
+    }
+    s += 2*channels/6;
+    for (int i = 0; i < channels/6; i++) {
+        out[i+s] = data[prefix+".c15.bias"][i];
+    }
+    s += channels/6;
+    for (int i = 0; i < channels/6; i++) {
+        out[i+s] = data[prefix+".c31.bias"][i];
+    }
+}
+
+
 template<int BatchSize, int Channels>
 class Block4 {
   public:
@@ -152,7 +439,7 @@ class Block4 {
     PW<BatchSize/3, 2*Channels, 2*Channels> pw[2];
     PW<BatchSize, Channels, Channels> residual;
     PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels> expand[3];
-    DW11 dw[4];
+    DWX dw[4];
 
     Block4(map<string, vector<float>>& data, string prefix) : in_pw(data[prefix+".conv.1.weight"]),
     pw { PW<BatchSize/3, 2*Channels, 2*Channels>(data[prefix+".conv.6.pointwise.weight"]),
@@ -166,10 +453,10 @@ class Block4 {
         PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels>(
                 data[prefix+".conv.15.convs.2.weight"])
     }, dw {
-        DW11(Channels*2, data, prefix+".conv.2.weight"),
-        DW11(Channels*2, data, prefix+".conv.6.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.10.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.14.weight"),
+        DWX(Channels*2, data, prefix+".conv.2"),
+        DWX(Channels*2, data, prefix+".conv.6.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.10.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.14"),
     }
 
     {
@@ -183,8 +470,8 @@ class Block4 {
             residualb[i] += data[prefix+".conv.15.convs.0.bias"][i];
         }
 
+        load_dwx_bias(data, prefix+".conv.2", pwb[0], 2*Channels);
         for (int i = 0; i < 2*Channels; i++) {
-            pwb[0][i] = data[prefix+".conv.2.bias"][i];
             pwb[1][i] = data[prefix+".conv.6.pointwise.bias"][i];
             pwb[2][i] = data[prefix+".conv.10.pointwise.bias"][i];
         }
@@ -216,7 +503,7 @@ class Block4 {
             }
         }
 
-        memset(input + (BatchSize/3)*Channels, 0, (BatchSize/3+11)*Channels*sizeof(float));
+        memset(input + (BatchSize/3)*Channels, 0, (2*BatchSize/3)*Channels*sizeof(float));
         memset(buf2, 0, (BatchSize/3)*2*Channels*sizeof(float));
         in_pw.run(input, buf2);
 
@@ -227,7 +514,6 @@ class Block4 {
                 input[i*2*Channels+j] += pwb[0][j];
             }
         }
-
         fasterswisharr(input, BatchSize/3 * 2 * Channels);
 
         for (int k = 1; k < 3; k++) {
@@ -262,7 +548,7 @@ class Block5 {
     PW<BatchSize/3, 2*Channels, 2*Channels> pw[3];
     PW<BatchSize, Channels, Channels> residual;
     PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels> expand[3];
-    DW11 dw[5];
+    DWX dw[5];
 
     Block5(map<string, vector<float>>& data, string prefix) : in_pw(data[prefix+".conv.1.weight"]),
     pw { PW<BatchSize/3, 2*Channels, 2*Channels>(data[prefix+".conv.6.pointwise.weight"]),
@@ -277,11 +563,11 @@ class Block5 {
         PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels>(
                 data[prefix+".conv.19.convs.2.weight"])
     }, dw {
-        DW11(Channels*2, data, prefix+".conv.2.weight"),
-        DW11(Channels*2, data, prefix+".conv.6.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.10.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.14.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.18.weight"),
+        DWX(Channels*2, data, prefix+".conv.2"),
+        DWX(Channels*2, data, prefix+".conv.6.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.10.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.14.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.18"),
     } {
         residualb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float));
         for (int i = 0; i < 5; i++) {
@@ -293,8 +579,9 @@ class Block5 {
             residualb[i] += data[prefix+".conv.19.convs.0.bias"][i];
         }
 
+
+        load_dwx_bias(data, prefix+".conv.2", pwb[0], 2*Channels);
         for (int i = 0; i < 2*Channels; i++) {
-            pwb[0][i] = data[prefix+".conv.2.bias"][i];
             pwb[1][i] = data[prefix+".conv.6.pointwise.bias"][i];
             pwb[2][i] = data[prefix+".conv.10.pointwise.bias"][i];
             pwb[3][i] = data[prefix+".conv.14.pointwise.bias"][i];
@@ -327,7 +614,7 @@ class Block5 {
             }
         }
 
-        memset(input + (BatchSize/3)*Channels, 0, (BatchSize/3+11)*Channels*sizeof(float));
+        memset(input + (BatchSize/3)*Channels, 0, (2*BatchSize/3)*Channels*sizeof(float));
         memset(buf2, 0, (BatchSize/3)*2*Channels*sizeof(float));
         in_pw.run(input, buf2);
 
@@ -370,7 +657,7 @@ class Block6 {
     PW<BatchSize/3, 2*Channels, 2*Channels> pw[4];
     PW<BatchSize, Channels, Channels> residual;
     PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels> expand[3];
-    DW11 dw[6];
+    DWX dw[6];
 
     Block6(map<string, vector<float>>& data, string prefix) : in_pw(data[prefix+".conv.1.weight"]),
     pw { PW<BatchSize/3, 2*Channels, 2*Channels>(data[prefix+".conv.6.pointwise.weight"]),
@@ -386,12 +673,12 @@ class Block6 {
         PW<BatchSize/3, Channels, Channels, 2*Channels, 3*Channels>(
                 data[prefix+".conv.23.convs.2.weight"])
     }, dw {
-        DW11(Channels*2, data, prefix+".conv.2.weight"),
-        DW11(Channels*2, data, prefix+".conv.6.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.10.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.14.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.18.depthwise.weight"),
-        DW11(Channels*2, data, prefix+".conv.22.weight"),
+        DWX(Channels*2, data, prefix+".conv.2"),
+        DWX(Channels*2, data, prefix+".conv.6.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.10.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.14.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.18.depthwise"),
+        DWX(Channels*2, data, prefix+".conv.22"),
     }{
         residualb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float));
         for (int i = 0; i < 6; i++) {
@@ -403,8 +690,8 @@ class Block6 {
             residualb[i] += data[prefix+".conv.23.convs.0.bias"][i];
         }
 
+        load_dwx_bias(data, prefix+".conv.2", pwb[0], 2*Channels);
         for (int i = 0; i < 2*Channels; i++) {
-            pwb[0][i] = data[prefix+".conv.2.bias"][i];
             pwb[1][i] = data[prefix+".conv.6.pointwise.bias"][i];
             pwb[2][i] = data[prefix+".conv.10.pointwise.bias"][i];
             pwb[3][i] = data[prefix+".conv.14.pointwise.bias"][i];
@@ -438,7 +725,7 @@ class Block6 {
             }
         }
 
-        memset(input + (BatchSize/3)*Channels, 0, (BatchSize/3+11)*Channels*sizeof(float));
+        memset(input + (BatchSize/3)*Channels, 0, (2*BatchSize/3)*Channels*sizeof(float));
         memset(buf2, 0, (BatchSize/3)*2*Channels*sizeof(float));
         in_pw.run(input, buf2);
 
@@ -449,7 +736,6 @@ class Block6 {
                 input[i*2*Channels+j] += pwb[0][j];
             }
         }
-
         fasterswisharr(input, BatchSize/3 * 2 * Channels);
 
         for (int k = 1; k < 5; k++) {
@@ -476,10 +762,10 @@ class BlockC {
   public:
     float *pwb;
     PW<BatchSize, Channels, Channels> pw;
-    DW11 dw;
+    DWX dw;
 
     BlockC(map<string, vector<float>>& data, string prefix) :
-        pw(data[prefix+".conv.0.pointwise.weight"]), dw(Channels, data, prefix+".conv.0.depthwise.weight") {
+        pw(data[prefix+".conv.0.pointwise.weight"]), dw(Channels, data, prefix+".conv.0.depthwise") {
         
         pwb = (float*) aligned_alloc(ALIGN, Channels*sizeof(float)); 
 
@@ -658,17 +944,13 @@ class Caller {
 
 
         block1.calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+
         blocks1.calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
-/*        for (int i = 0; i < BATCH_SIZE*CHANNELS; i+=2400) {
-            printf("%f ", inp[PAD*CHANNELS + i]);
-        }
-        printf("\n");*/
         block2.calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
         blocks2.calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
         blocks[0].calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
         blocks[1].calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
         blocks[2].calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
-
         blockc.calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, buf2 + PAD*CHANNELS);
         blockc2.calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, buf2 + PAD*CHANNELS);
         for (int i = 0; i < BATCH_SIZE; i++) {
@@ -717,7 +999,7 @@ class Caller {
     }
 };
 
-PYBIND11_MODULE(osprey24, m) {
+PYBIND11_MODULE(osprey24dwx, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     py::class_<Caller>(m, "CallerDWX")
         .def(py::init<>())
