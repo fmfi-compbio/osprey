@@ -999,9 +999,130 @@ class Caller {
     }
 };
 
+class CallerT {
+  public:
+    map<string, vector<float>> weights;
+    PW<BATCH_SIZE*4, 9, CHANNELS/4> pw_in;
+
+    Block4<BATCH_SIZE*4, CHANNELS/4> block1;
+    BlockS<BATCH_SIZE*4, CHANNELS/4> blocks1;
+    Block5<BATCH_SIZE*2, CHANNELS/2> block2;
+    BlockS<BATCH_SIZE*2, CHANNELS/2> blocks2;
+
+    Block6<BATCH_SIZE, CHANNELS> blocks[3];
+
+    BlockC<BATCH_SIZE, CHANNELS> blockc;
+    BlockC2<BATCH_SIZE, CHANNELS> blockc2;
+    float *ib, *inp_im2col, *inp, *out, *buf2, *bufd2s;
+
+    CallerT() : weights(load_weight("net24t.txt")),
+        pw_in(weights["s.e.encoder.0.conv.0.conv.weight"]),
+        block1(weights, "s.e.encoder.1"),
+        blocks1(weights, "s.e.encoder.2"),
+        block2(weights, "s.e.encoder.3"),
+        blocks2(weights, "s.e.encoder.4"),
+        blocks {
+            Block6<BATCH_SIZE, CHANNELS>(weights, "s.e.encoder.5"),
+            Block6<BATCH_SIZE, CHANNELS>(weights, "s.e.encoder.6"),
+            Block6<BATCH_SIZE, CHANNELS>(weights, "s.e.encoder.7"),
+        },
+        blockc(weights, "s.e.encoder.8"),
+        blockc2(weights, "s.e.encoder.9")
+    {
+        ib = (float*) aligned_alloc(ALIGN, CHANNELS/4*sizeof(float));
+        for (int i = 0; i < CHANNELS/4; i++) {
+            ib[i] = weights["s.e.encoder.0.conv.0.conv.bias"][i];
+        }
+        inp_im2col = (float*) aligned_alloc(ALIGN, (BATCH_SIZE)*9*4*sizeof(float));
+        inp = (float*) aligned_alloc(ALIGN, (BATCH_SIZE+2*PAD)*CHANNELS*sizeof(float));
+        out = (float*) aligned_alloc(ALIGN, (BATCH_SIZE+2*PAD)*CHANNELS*sizeof(float));
+        buf2 = (float*) aligned_alloc(ALIGN, (BATCH_SIZE+2*PAD)*CHANNELS*sizeof(float));
+        bufd2s = (float*) aligned_alloc(ALIGN, (BATCH_SIZE/3+2*PAD)*2*CHANNELS*sizeof(float));
+        memset(inp_im2col, 0, (BATCH_SIZE)*9*4*sizeof(float));
+        memset(inp, 0, (BATCH_SIZE+2*PAD)*CHANNELS*sizeof(float));
+        memset(out, 0, (BATCH_SIZE+2*PAD)*CHANNELS*sizeof(float));
+        memset(buf2, 0, (BATCH_SIZE+2*PAD)*CHANNELS*sizeof(float));
+        memset(bufd2s, 0, (BATCH_SIZE/3+2*PAD)*2*CHANNELS*sizeof(float)); 
+    }
+
+    float* call_chunk(float* inpx) {
+/*        for (int i = 0; i < BATCH_SIZE*4; i++)  {
+            if (isnan(inpx[i])) {
+                printf("wat inp %d\n", i);
+            }
+        }*/
+        im2col(inpx, inp_im2col, BATCH_SIZE*4);
+        for (int j = 0; j < BATCH_SIZE*4; j++) {
+            memcpy(inp + (j+PAD*4)*CHANNELS/4, ib, CHANNELS/4*sizeof(float));
+        }
+/*        for (int i = 0; i < BATCH_SIZE*CHANNELS; i++) {
+            if (isnan(inp_im2col[i])) {
+                printf("wat %d\n", i);
+            }
+        }*/
+        pw_in.run(inp_im2col, inp + PAD*CHANNELS);
+
+/*        for (int i = 0; i < BATCH_SIZE*CHANNELS; i++) {
+            inp[PAD*CHANNELS+i] = fasterswish(inp[PAD*CHANNELS+i]);
+        }*/
+        fasterswisharr(inp + PAD*CHANNELS, BATCH_SIZE*CHANNELS);
+
+
+        block1.calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+
+        blocks1.calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+        block2.calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+        blocks2.calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+        blocks[0].calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+        blocks[1].calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+        blocks[2].calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, bufd2s + PAD*2*CHANNELS);
+        blockc.calc(out + PAD*CHANNELS, inp + PAD*CHANNELS, buf2 + PAD*CHANNELS);
+        blockc2.calc(inp + PAD*CHANNELS, out + PAD*CHANNELS, buf2 + PAD*CHANNELS);
+    
+        return out + PAD*CHANNELS;
+    }
+
+    py::array_t<float> call(py::array_t<float, py::array::c_style | py::array::forcecast> array) {
+        float *ptr = (float*)array.request().ptr;
+        auto result = py::array_t<float>((array.size()+3)/4*48);
+        py::buffer_info result_buf = result.request();
+        float* result_ptr = (float*) (result_buf.ptr);
+
+        int out_pos = 0;
+        for (int i = 0; i < array.size() - 8*STEPPING_PAD; i += BATCH_SIZE*4-8*STEPPING_PAD) {
+            float *out;
+            int pad_start, pad_end;
+            if (i + BATCH_SIZE*4 < array.size()) {
+//                printf("call %d\n", i);
+                out = call_chunk(ptr+i);
+                pad_start = i == 0 ? 0 : STEPPING_PAD;
+                pad_end = STEPPING_PAD;
+            } else {
+                out = call_chunk(ptr+array.size()-BATCH_SIZE*4);
+                pad_end = 0;
+                if (i == 0) {
+                    pad_start = 0;
+                } else {
+                    pad_start = (i - (array.size() - BATCH_SIZE*4))/4 + STEPPING_PAD;
+                }
+            }
+/*            printf("%d %d %d copy from %d to %d as %d\n", i, pad_start, pad_end,
+                   out_pos, out_pos + (BATCH_SIZE - pad_start - pad_end)*5,
+                   (array.size()+3)/4*5);*/
+            memcpy(result_ptr + out_pos, out + pad_start * 48, (BATCH_SIZE - pad_start - pad_end)*sizeof(float)*48);
+
+            out_pos += (BATCH_SIZE - pad_start - pad_end) * 48;
+        }
+        return result;
+    }
+};
+
 PYBIND11_MODULE(osprey24dwx, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     py::class_<Caller>(m, "CallerDWX")
         .def(py::init<>())
         .def("call", &Caller::call);
+    py::class_<CallerT>(m, "CallerDWXT")
+        .def(py::init<>())
+        .def("call", &CallerT::call);
 }
