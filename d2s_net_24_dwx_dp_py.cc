@@ -1107,6 +1107,8 @@ class CallerDP {
         }
 
         free(pool_out);
+        free(dyn_pool_res_data);
+        free(dyn_pool_res_wm);
 
         return result;
     }
