@@ -36,13 +36,20 @@ def call_file(filename):
                 signal = read.get_raw_data()
                 signal = rescale_signal(signal)
 
-                basecall = caller.call(signal).reshape((-1,48))
-                basecall = decoder.beam_search(np.ascontiguousarray(basecall), 5, 0.1)
+                if len(signal) >= 512*3*4:
+                    basecall = caller.call(signal).reshape((-1,48))
+                    basecall = decoder.beam_search(np.ascontiguousarray(basecall), 5, 0.1)
+                else:
+                    signal = np.pad(signal, (0, 512*3*4-len(signal)))
+                    basecall = caller.call(signal).reshape((-1,48))
+                    basecall = decoder.beam_search(np.ascontiguousarray(basecall), 5, 0.1)
+
+
                 out.append((read_id, basecall, len(signal)))
     return out
 
 caller = osprey.CallerDWXT()
-small_tables = pickle.load(open("net24t.txt.tabs", "rb"))
+small_tables = pickle.load(open("weights/net24t.txt.tabs", "rb"))
 decoder = d.DecoderTab(small_tables[0],
                        small_tables[1],
                        small_tables[2],
@@ -58,7 +65,7 @@ files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
 
 #files = ["../eval/test_data_476/5210_N125509_20170425_FN2002039725_MN19691_sequencing_run_klebs_033_restart_87298_ch146_read12031_strand.fast5"]
 
-fout = open("outtmp3d.fasta", "w")
+fout = open(sys.argv[2], "w")
 
 ts = 0
 start = time.time()

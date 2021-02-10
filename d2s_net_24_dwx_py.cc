@@ -1015,7 +1015,7 @@ class CallerT {
     BlockC2<BATCH_SIZE, CHANNELS> blockc2;
     float *ib, *inp_im2col, *inp, *out, *buf2, *bufd2s;
 
-    CallerT() : weights(load_weight("net24t.txt")),
+    CallerT() : weights(load_weight("weights/net24t.txt")),
         pw_in(weights["s.e.encoder.0.conv.0.conv.weight"]),
         block1(weights, "s.e.encoder.1"),
         blocks1(weights, "s.e.encoder.2"),
