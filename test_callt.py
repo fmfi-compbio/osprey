@@ -8,6 +8,7 @@ import deepnano2
 from scipy.special import softmax
 import decoder.decoder as d
 import pickle
+from multiprocessing import Pool
 
 def med_mad(x, factor=1.4826):
     """
@@ -69,12 +70,15 @@ fout = open(sys.argv[2], "w")
 
 ts = 0
 start = time.time()
-for i, f in enumerate(files):
-    res = call_file(f)
+pool = Pool(4)
+#for i, f in enumerate(files):
+cc = 0
+for res in pool.imap_unordered(call_file, files):
     for r_id, basecall, ls in res:
         print(">%s" % r_id, file=fout)
         print(basecall, file=fout)
-        print(i, f, ls, len(basecall))
+        cc += 1
+        print(cc, ls, len(basecall))
         fout.flush()
         ts += ls
 
