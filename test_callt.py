@@ -70,10 +70,11 @@ fout = open(sys.argv[2], "w")
 
 ts = 0
 start = time.time()
-pool = Pool(4)
+#pool = Pool(4)
 #for i, f in enumerate(files):
 cc = 0
-for res in pool.imap_unordered(call_file, files):
+#for res in pool.imap_unordered(call_file, files):
+for res in map(call_file, files):
     for r_id, basecall, ls in res:
         print(">%s" % r_id, file=fout)
         print(basecall, file=fout)
