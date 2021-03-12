@@ -4,7 +4,6 @@ import time
 from ont_fast5_api.fast5_interface import get_fast5_file
 import sys
 import os
-import deepnano2
 from scipy.special import softmax
 import decoder.decoder as d
 import pickle
