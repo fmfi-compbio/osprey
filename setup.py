@@ -24,7 +24,7 @@ if mkl_root is None:
     sys.exit()
 
 ext_modules = [
-    Pybind11Extension("osprey",
+    Pybind11Extension("osprey.osprey",
         ["src/caller.cpp"],
         cxx_std="17", 
         extra_compile_args=["-I" + os.path.join(mkl_root, "include"), "-march=native", "-DMKL_LP64", "-m64"],
@@ -56,5 +56,7 @@ setup(
     zip_safe=False,
     install_requires=install_requires,
     scripts=["scripts/osprey_basecaller.py"],
+    packages=["osprey"],
     package_data={'osprey': ['weights/net24dp.txt', 'weights/net24dp.txt.tabs']},
+    include_package_data=True,
 )

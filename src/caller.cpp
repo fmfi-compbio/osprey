@@ -947,7 +947,7 @@ class CallerDP {
     BlockC2<BATCH_SIZE, CHANNELS> blockc2;
     float *ib, *inp_im2col, *inp, *out, *buf2, *bufd2s, *outdp;
 
-    CallerDP() : weights(load_weight("weights/net24dp.txt")),
+    CallerDP(string weight_path) : weights(load_weight(weight_path)),
         pw_in(weights["s.e.encoder.0.conv.0.conv.weight"]),
         block1(weights, "s.e.encoder.1"),
         blocks1(weights, "s.e.encoder.2"),
@@ -1117,6 +1117,6 @@ class CallerDP {
 PYBIND11_MODULE(osprey, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     py::class_<CallerDP>(m, "Caller")
-        .def(py::init<>())
+        .def(py::init<string>())
         .def("call", &CallerDP::call);
 }

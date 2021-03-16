@@ -10,6 +10,9 @@ from scipy.special import softmax
 import decoder.decoder as d
 import pickle
 from multiprocessing import Pool
+import gzip
+import datetime
+import argparse
 
 def med_mad(x, factor=1.4826):
     """
@@ -43,53 +46,101 @@ def call_file(filename):
                     basecall = caller.call(signal)
                     if len(basecall) > 0:
                         basecall = basecall.reshape((-1,48))
-                        basecall = decoder.beam_search(np.ascontiguousarray(basecall), 5, 0.1)
+                        basecall, quals = decoder.beam_search(np.ascontiguousarray(basecall), args.beam_size, args.beam_cut_threshold)
                     else:
                         basecall = "A"
+                        quals = "A"
                 else:
                     signal = np.pad(signal, (0, 512*3*4-len(signal)))
                     basecall = caller.call(signal).reshape((-1,48))
-                    basecall = decoder.beam_search(np.ascontiguousarray(basecall), 5, 0.1)
+                    basecall, quals = decoder.beam_search(np.ascontiguousarray(basecall), args.beam_size, args.beam_cut_threshold)
 
 
-                out.append((read_id, basecall, len(signal)))
+                out.append((read_id, basecall, quals))
     return out
 
-caller = osprey.Caller()
-small_tables = pickle.load(open("weights/net24dp.txt.tabs", "rb"))
-decoder = d.DecoderTab(small_tables[0],
-                       small_tables[1],
-                       small_tables[2],
-                       small_tables[3],
-                       small_tables[4],
-                       small_tables[5],
-                       small_tables[6], 
-)
 
-
-base_dir = sys.argv[1]
-files = [os.path.join(base_dir, fn) for fn in os.listdir(base_dir)]
-
-#files = ["../eval/test_data_476/5210_N125509_20170425_FN2002039725_MN19691_sequencing_run_klebs_033_restart_87298_ch146_read12031_strand.fast5"]
-
-fout = open(sys.argv[2], "w")
-
-ts = 0
-start = time.time()
-pool = Pool(4)
-#for i, f in enumerate(files):
-cc = 0
-for res in pool.imap_unordered(call_file, files):
-#for res in map(call_file, files):
-    for r_id, basecall, ls in res:
-        print(">%s" % r_id, file=fout)
+def write_output(read_id, basecall, quals, output_file, format):
+    if len(basecall) == 0:
+        return
+    if format == "fasta":
+        print(">%s" % read_id, file=fout)
         print(basecall, file=fout)
-        cc += 1
-        print(cc, ls, len(basecall))
-        fout.flush()
-        ts += ls
+    else: # fastq
+        print("@%s" % read_id, file=fout)
+        print(basecall, file=fout)
+        print("+", file=fout)
+        print(quals, file=fout)
+ 
 
-end = time.time()
-print("speed", ts / (end - start))
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Fast caller for ONT reads')
 
-fout.close()
+    parser.add_argument('--directory', type=str, nargs='*', help='One or more directories with reads')
+    parser.add_argument('--reads', type=str, nargs='*', help='One or more read files')
+    parser.add_argument("--output", type=str, required=True, help="Output FASTA file name")
+    parser.add_argument("--threads", type=int, default=1, help="Number of threads for basecalling, default 1")
+    parser.add_argument("--weights", type=str, default=None, help="Path to network weights, only used for custom weights")
+    parser.add_argument("--beam-size", type=int, default=5,
+        help="Beam size (default 5)")
+    parser.add_argument("--beam-cut-threshold", type=float, default=0.1,
+        help="Threshold for creating beams (higher means faster beam search, but smaller accuracy). Values higher than 0.2 might lead to weird errors. Default 0.1 for 48,...,96 and 0.0001 for 256")
+    parser.add_argument("--output-format", choices=["fasta", "fastq"], default="fasta")
+    parser.add_argument("--gzip-output", action="store_true", help="Compress output with gzip")
+
+    args = parser.parse_args()
+
+    if args.weights is None:
+        weights = os.path.join(osprey.__path__[0], "weights", "net24dp.txt")
+    else:
+        weights = args.weights
+    
+    caller = osprey.Caller(weights)
+    small_tables = pickle.load(open("%s.tabs" % weights, "rb"))
+    decoder = d.DecoderTab(small_tables[0],
+                           small_tables[1],
+                           small_tables[2],
+                           small_tables[3],
+                           small_tables[4],
+                           small_tables[5],
+                           small_tables[6], 
+    )
+
+
+    assert args.threads >= 1
+
+    files = args.reads if args.reads else []
+    if args.directory:
+        for directory_name in args.directory:
+            files += [os.path.join(directory_name, fn) for fn in os.listdir(directory_name)]
+
+    if len(files) == 0:
+        print("Zero input reads, nothing to do.")
+        sys.exit()
+
+
+    if args.gzip_output:
+        fout = gzip.open(args.output, "wt")
+    else:
+        fout = open(args.output, "w")
+
+    if args.threads <= 1:
+        done = 0
+        for fn in files:
+            start = datetime.datetime.now()
+            for read_id, basecall, qual in call_file(fn):
+                write_output(read_id, basecall, qual, fout, args.output_format) 
+                done += 1
+                print("done %d/%d" % (done, len(files)), read_id, datetime.datetime.now() - start, file=sys.stderr)
+
+    else:
+        pool = Pool(args.threads)
+        done = 0
+        for out in pool.imap_unordered(call_file, files):
+            for read_id, basecall, qual in out:
+                write_output(read_id, basecall, qual, fout, args.output_format)
+                done += 1
+                print("done %d/%d" % (done, len(files)), read_id, file=sys.stderr)
+    
+    fout.close()
+
