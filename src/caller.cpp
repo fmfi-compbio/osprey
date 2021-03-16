@@ -6,7 +6,7 @@
 #include <immintrin.h>
 #include <cassert>
 #include <cmath>
-#include "mkl.h"
+#include <mkl.h>
 #include "loading.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -1114,9 +1114,9 @@ class CallerDP {
     }
 };
 
-PYBIND11_MODULE(osprey24dwxdp, m) {
+PYBIND11_MODULE(osprey, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
-    py::class_<CallerDP>(m, "CallerDP")
+    py::class_<CallerDP>(m, "Caller")
         .def(py::init<>())
         .def("call", &CallerDP::call);
 }

@@ -1,4 +1,6 @@
-import osprey24dwxdp as osprey
+#!/usr/bin/env python
+
+import osprey
 import numpy as np
 import time
 from ont_fast5_api.fast5_interface import get_fast5_file
@@ -53,7 +55,7 @@ def call_file(filename):
                 out.append((read_id, basecall, len(signal)))
     return out
 
-caller = osprey.CallerDP()
+caller = osprey.Caller()
 small_tables = pickle.load(open("weights/net24dp.txt.tabs", "rb"))
 decoder = d.DecoderTab(small_tables[0],
                        small_tables[1],
