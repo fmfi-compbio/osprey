@@ -37,6 +37,7 @@ def add_time_seconds(base_time_str, delta_seconds):
 alph = "NACGT"
 
 def call_file(filename):
+    print("go", filename)
     out = []
 #    try:
     if True:
@@ -65,7 +66,11 @@ def call_file(filename):
                 basecall = caller.call(signal)
                 if len(basecall) > 0:
                     basecall = basecall.reshape((-1,48))
-                    basecall, qual = decoder.beam_search(np.ascontiguousarray(basecall), args.beam_size, args.beam_cut_threshold)
+                    if np.any(np.isnan(basecall)):
+                        basecall = "A"
+                        qual = "A"
+                    else:
+                        basecall, qual = decoder.beam_search(np.ascontiguousarray(basecall), args.beam_size, args.beam_cut_threshold)
                 else:
                     basecall = "A"
                     qual = "A"

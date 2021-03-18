@@ -1045,7 +1045,7 @@ class CallerDP {
             dyn_pool_res_wm[i] = cur_cs;
         }
         int pooled_size = cur_cs + 2;
-        printf("pool size %d\n", pooled_size);
+//        printf("pool size %d\n", pooled_size);
         float *pool_out = (float*) aligned_alloc(ALIGN, pooled_size*96*sizeof(float));
         memset(pool_out, 0, pooled_size*96*sizeof(float));
 
