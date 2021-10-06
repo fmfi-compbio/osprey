@@ -39,7 +39,7 @@ ext_modules = [
     ),
 ]
 
-install_requires = ["ont-fast5-api>=3.1.6", "numpy>=1.19", "scipy>=1.5"]
+install_requires = ["ont-fast5-api>=3.1.6", "numpy>=1.19", "scipy>=1.5", "python-dateutil>=2.8.2"]
 
 setup(
     name="osprey",

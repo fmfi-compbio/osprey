@@ -13,6 +13,10 @@ from multiprocessing import Pool
 import gzip
 import datetime
 import argparse
+import warnings
+from dateutil.parser import parse as date_parse
+from dateutil.parser import ParserError
+
 
 def med_mad(x, factor=1.4826):
     """
@@ -30,7 +34,11 @@ def rescale_signal(signal):
     return np.clip(signal, -2.5, 2.5)
 
 def add_time_seconds(base_time_str, delta_seconds):
-    base_time = datetime.datetime.strptime(base_time_str, '%Y-%m-%dT%H:%M:%SZ')
+    try:
+        base_time = date_parse(base_time_str)
+    except ParserError:
+        base_time = datetime.datetime(2020, 1, 1)
+        warnings.warn("Cannot parse base time %s" % base_time_str)
     base_time += datetime.timedelta(seconds=delta_seconds)
     return base_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
